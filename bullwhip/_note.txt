@@ -1,0 +1,10 @@
+ideas
+- make a network (e.g. 100 nodes) with tiers (e.g. 4), assign each node a random number of suppliers and customers (e.g. 3-10)
+- the final tier, the customers have a slowly changing demand
+	- a sudden spike in demand from customers takes place
+- order cancellation is allowed, therefore multiple orders can be placed
+- each supplier has a stock of inventory
+- assume there is only one good per tier, therefore perfect substitutability between suppliers
+- [event driven or tick driven? i.e. a customer places an order, which affects a supplier...or each node can only see t-1 demand? The latter is better I think]
+- each supplier orders more inventory based on a decayed of the previous demand, e.g. 0.8 * t-1 + 0.2 * t-2, subtracting the current inventory and adding a buffer of say 10%.
+- not yet including order batching (i.e. bulk buying), although it is a cause of bullwhip

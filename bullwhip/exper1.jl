@@ -1,0 +1,370 @@
+
+include("utils.jl")
+
+using CSV
+using DataFrames
+
+using Agents, Random
+using Agents.DataFrames, Agents.Graphs
+using StatsBase: sample, Weights
+using .Utils: visual_check
+
+MAX_DUPLICATE_ORDERS = 5
+N_CONSUMERS = 20
+N_FIRM_MAPPING = 3
+TIERS = 3
+FIRMS_PER_TIER = 10
+
+MIN_INVENTORY = 3
+
+agent_id_counter = Ref(1_000)
+custom_id_gen = () -> (agent_id_counter[] += 1; agent_id_counter[])
+
+message_id_counter = Ref(100)
+message_id_gen = () -> (message_id_counter[] += 1; message_id_counter[])
+
+# TODO: validate, e.g. capture order data per node and watch
+# orders flow through, e.g. export as CSV and process in Python to calculate
+# perhaps a real-time or periodic chart is possible
+
+# TODO for bullwhip
+# - order cancellation
+# - multiple order creation or perhaps batching (i.e. inflating demand)
+
+struct Message
+    id::Int
+    kind::Symbol
+    quantity::Int
+    sent_tick::Int
+    original_id::Int
+end
+
+@agent struct Firm(GraphAgent)
+    inventory::Int
+    inbox::Vector{Message}
+    historical_demand::Vector{Int}
+    pending_demand::Int
+    pending_orders::Vector{Int}
+    fulfilled_orders::Set{Int}
+end
+
+@agent struct Consumer(GraphAgent)
+    preference::Float32
+    inbox::Vector{Message}
+    pending_demand::Int
+    pending_orders::Vector{Int}
+    fulfilled_orders::Set{Int}
+end
+
+# AI help
+function forecast_demand(agent::Firm)
+    # 1. Calculate raw current demand from messages
+    orders = filter(msg -> msg.kind == :new_order, agent.inbox)
+    raw_demand = length(orders) > 0 ? sum(msg -> msg.quantity, orders) : 0
+
+    # 2. Smooth the demand forecast (Moving Average or Exponential Smoothing)
+    # This represents what the agent expects the market to demand next period
+    forecast = Float64(raw_demand)
+    if length(agent.historical_demand) > 0
+        forecast = 0.8 * raw_demand + 0.2 * agent.historical_demand[end]
+    end
+
+    # 3. Determine Production/Order Requirement
+    # Target = Forecast + Safety Buffer - (Current Stock + Incoming Stock)
+    target_production = forecast + MIN_INVENTORY - (agent.inventory + agent.pending_demand)
+    
+    return Int(round(max(0, target_production)))
+end
+
+# Firm step
+function agent_step!(agent::Firm, model)
+    current_tick = abmtime(model)
+
+    suppliers = shuffle(abmrng(model), collect(find_upstream_suppliers(agent, model)))
+    is_root = suppliers == []
+
+    new_demand = forecast_demand(agent)
+
+    a_id = agent.id; println("demand: $a_id - $new_demand")
+
+    push!(agent.historical_demand, new_demand)
+
+    if new_demand > 0
+        if is_root
+            push!(agent.inbox,
+                Message(message_id_gen(), :manufacture, new_demand, current_tick, -1))
+        else
+            new_order = Message(message_id_gen(), :new_order, new_demand, current_tick, -1)
+            agent.pending_demand += new_demand
+            push!(agent.pending_orders, new_order.id)
+            push!(suppliers[1].inbox, new_order)
+        end
+    end
+
+    # manufacture and fufilled orders first in order to be able to have maximum inventory
+    # for new orders
+    sort_order = Dict(:manufacture => 1, :fulfilled_order => 2, :new_order => 3)
+    sort!(agent.inbox, by = x -> sort_order[x.kind])
+
+    processed_letters = Message[]
+
+    for letter in agent.inbox
+
+        # only process the order if it was sent at least one tick ago to prevent cascades
+        if letter.sent_tick <= current_tick - 1
+            #println("** ", letter.kind)
+            if letter.kind == :new_order
+
+                # check if the new order can be fulfilled with inventory
+                # otherwise have to wait until inventory increases
+                quantity = letter.quantity
+
+                # key condition to check if an order is now able to be fulfilled
+                if agent.inventory >= quantity
+                    agent.inventory -= quantity
+                    # inform the downstream receiver of their goods being provided
+                    # i.e. this is a mapping of a new_order to a fulfilled_order
+                    # the quantity cascades to the next tier, the id is lost
+
+                    receiver = find_downstream_receiver(agent, letter.id, model)
+                    if receiver == nothing
+                        throw("Error: could not find downstream receiver for order id: $letter.id")
+                    end
+
+                    # currently only place where message to fulfill order and map to old message
+                    push!(receiver.inbox,
+                        Message(message_id_gen(), :fulfilled_order, quantity, current_tick, letter.id))
+
+                    push!(processed_letters, letter)
+                end
+
+            elseif letter.kind == :fulfilled_order
+                # increase the inventory, just like manufacture
+                agent.inventory += letter.quantity
+                agent.pending_demand -= letter.quantity
+                clear_order(agent, letter.original_id)
+                push!(processed_letters, letter)
+            elseif letter.kind == :manufacture
+                if !is_root
+                    throw("Error: only root nodes can manufacture")
+                end
+                agent.inventory += letter.quantity
+                push!(processed_letters, letter)
+            else
+                throw("Error: unrecognised letter: $letter.kind")
+            end
+        end
+    end
+
+    filter!(letter -> letter ∉ processed_letters, agent.inbox)
+end
+
+function agent_step!(agent::Consumer, model)
+    current_tick = abmtime(model)
+    # make a new order
+    if rand(abmrng(model)) > 0.9 && current_tick < 10
+        # println("new order customer")
+
+        # send order to one supplier
+        supplier = find_upstream_supplier(agent, model)
+
+        quantity = 1
+
+        new_order = Message(message_id_gen(), :new_order, quantity, current_tick, -1)
+        agent.pending_demand += quantity
+        push!(agent.pending_orders, new_order.id)
+        push!(supplier.inbox, new_order)
+    end
+
+    processed_letters = Message[]
+
+    for letter in agent.inbox
+
+        # only process the order if it was sent at least one tick ago to prevent cascades
+        if letter.sent_tick <= current_tick - 1
+            if letter.kind == :fulfilled_order
+                # increase the inventory, just like manufacture
+                if letter.quantity != 1
+                    throw("agent expected quantity one")
+                end
+                push!(processed_letters, letter)
+                # TODO: fix, this is not removing the letter
+                agent.pending_demand -= letter.quantity
+                clear_order(agent, letter.original_id)
+            else
+                throw("Error: unrecognised letter: $letter.kind")
+            end
+        end
+    end
+
+    filter!(letter -> letter ∉ processed_letters, agent.inbox)
+end
+
+function find_upstream_suppliers(agent::Union{Firm, Consumer}, model)
+    upstream = inneighbors(model.space.graph, agent.pos)
+    Channel() do channel
+        for supplier_pos in upstream
+             for agent in agents_in_position(supplier_pos, model)
+                put!(channel, agent)
+             end
+        end
+    end
+end
+
+function find_upstream_supplier(agent::Union{Firm, Consumer}, model)
+    upstream = inneighbors(model.space.graph, agent.pos)
+    # i.e. root node
+    if length(upstream) == 0
+        return nothing
+    end
+    supplier_pos = sample(abmrng(model), upstream)
+    supplier, _ = iterate(agents_in_position(supplier_pos, model))
+    return supplier
+end
+
+function find_downstream_receiver(agent::Firm, order_id::Int, model)
+    downstream = outneighbors(model.space.graph, agent.pos)
+    for receiver_pos in downstream
+        for agent in agents_in_position(receiver_pos, model)
+            if order_id in agent.pending_orders
+                return agent
+            end
+        end
+    end
+    return nothing
+end
+
+function clear_order(agent::Union{Firm, Consumer}, order_id::Int)
+    # println("fulfilling: $order_id")
+    if order_id in agent.fulfilled_orders
+        throw(ArgumentError("Order $order_id has already been fulfilled"))
+    end
+    # orders that come directly from inventory are not pending in the receiver
+    if order_id ∈ agent.pending_orders
+        deleteat!(agent.pending_orders, findfirst(==(order_id), agent.pending_orders))
+    end
+    push!(agent.fulfilled_orders, order_id)
+end
+
+function model_initiation(seed = 0)
+    rng = Xoshiro(seed)
+    space = GraphSpace(SimpleDiGraph(0))
+
+    consumer_ids = Int[]
+    firms_by_tier = Dict{Int, Vector{Int}}()
+
+    properties = Dict{Symbol, Any}(
+        :space => space,
+        :consumer_ids => consumer_ids,
+        :firms_by_tier => firms_by_tier,
+    )
+
+    model = StandardABM(Union{Firm, Consumer},
+        space;
+        scheduler = Schedulers.Randomly(),
+        agent_step! = agent_step!,
+        model_step! = model_step!,
+        properties = properties,
+        rng = rng)
+
+    add_vertex!(model)  # one vertex for all consumers
+    for _ in 1:N_CONSUMERS
+
+        c = Consumer(
+            id = custom_id_gen(),
+            pos = 1,
+            preference=rand(rng),
+            inbox=Message[],
+            pending_demand=0,
+            pending_orders=Int[],
+            fulfilled_orders=Set{Int}())
+
+        add_agent!(c, c.pos, model)
+        push!(model.consumer_ids, c.id)
+    end
+
+    consumer_pos = model[model.consumer_ids[1]].pos
+
+    for tier in 1:TIERS
+        firm_ids = Int[]
+
+        for _ in 1:FIRMS_PER_TIER
+            add_vertex!(model)
+            idx = nv(model)
+
+            f = Firm(
+                id=custom_id_gen(),
+                pos=idx,
+                inventory=0,
+                inbox=Message[],
+                historical_demand=Int[],
+                pending_demand=0,
+                pending_orders=Int[],
+                fulfilled_orders=Set{Int}())
+
+            add_agent!(f, f.pos, model)
+            push!(firm_ids, f.id)
+        end
+
+        # potential bug on different seed: no upstream suppliers if previous
+        # tier does not point to a firm in this tier
+        if tier == 1
+            for fid in firm_ids
+                add_edge!(model, model[fid].pos, consumer_pos)
+            end
+        else
+            prev_ids = model.firms_by_tier[tier - 1]
+            for fid in firm_ids
+                sampled_ids = sample(rng, prev_ids, N_FIRM_MAPPING, replace=false)
+                for prev_id in sampled_ids
+                    add_edge!(model, model[fid].pos, model[prev_id].pos)
+                end
+            end
+        end
+
+        model.firms_by_tier[tier] = firm_ids
+    end
+
+    return model
+end
+
+function model_step!(model)
+    tick = abmtime(model)
+    println("Tick: $tick")
+end
+
+model = model_initiation()
+
+# visual_check(model, TIERS)
+
+pendingOrders = (agent::Consumer) -> length(agent.pending_orders)
+
+firmOrders = (agent::Firm) -> count(msg.kind == :new_order for msg in agent.inbox)
+
+firmQuantityOrder = (agent::Firm) -> 
+    sum(msg.quantity for msg in agent.inbox if msg.kind == :new_order; init=0)
+
+firmQuantityManufacture = (agent::Firm) -> 
+    sum(msg.quantity for msg in agent.inbox if msg.kind == :manufacture; init=0)
+
+quantityReceived = (agent::Union{Consumer, Firm}) -> 
+    sum(msg.quantity for msg in agent.inbox if msg.kind == :fulfilled_order; init=0)
+
+NO_TICKS = 25
+data, _ = run!(model, NO_TICKS; adata = [
+    pendingOrders,
+    :inventory,
+    firmOrders,
+    firmQuantityOrder, 
+    firmQuantityManufacture, 
+    quantityReceived,
+    :pending_demand
+])
+
+rename!(data, [
+    :time, :id, :agent_type, 
+    :pending_orders, :inventory, :firm_orders, 
+    :qty_ordered, :qty_manufactured, :qty_received, :pending_demand
+])
+
+CSV.write("run.csv", data)
