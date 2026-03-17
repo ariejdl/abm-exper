@@ -337,6 +337,10 @@ model = model_initiation()
 
 # visual_check(model, TIERS)
 
+# ===== reporting functions =====
+
+inventoryFn = (agent::Firm) -> agent.inventory
+
 pendingOrders = (agent::Consumer) -> length(agent.pending_orders)
 
 firmOrders = (agent::Firm) -> count(msg.kind == :new_order for msg in agent.inbox)
@@ -350,21 +354,26 @@ firmQuantityManufacture = (agent::Firm) ->
 quantityReceived = (agent::Union{Consumer, Firm}) -> 
     sum(msg.quantity for msg in agent.inbox if msg.kind == :fulfilled_order; init=0)
 
-NO_TICKS = 25
-data, _ = run!(model, NO_TICKS; adata = [
-    pendingOrders,
-    :inventory,
-    firmOrders,
-    firmQuantityOrder, 
-    firmQuantityManufacture, 
-    quantityReceived,
-    :pending_demand
-])
+pendingDemand = (agent::Union{Consumer, Firm}) -> agent.pending_demand
 
-rename!(data, [
-    :time, :id, :agent_type, 
-    :pending_orders, :inventory, :firm_orders, 
-    :qty_ordered, :qty_manufactured, :qty_received, :pending_demand
-])
+# ========
+
+agent_reporters = [
+    (pendingOrders, :pending_orders),
+    (inventoryFn, :inventory),
+    (firmOrders, :firm_orders),
+    (firmQuantityOrder, :qty_ordered),
+    (firmQuantityManufacture, :qty_manufactured),
+    (quantityReceived, :qty_received),
+    (pendingDemand, :pending_demand)
+]
+
+adata_funcs = [first(pair) for pair in agent_reporters]
+new_names = [last(pair) for pair in agent_reporters]
+
+NO_TICKS = 25
+data, _ = run!(model, NO_TICKS; adata = adata_funcs)
+
+rename!(data, vcat([:time, :id, :agent_type], new_names))
 
 CSV.write("run.csv", data)
