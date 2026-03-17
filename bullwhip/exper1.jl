@@ -85,8 +85,6 @@ function agent_step!(agent::Firm, model)
 
     new_demand = forecast_demand(agent)
 
-    a_id = agent.id; println("demand: $a_id - $new_demand")
-
     push!(agent.historical_demand, new_demand)
 
     if new_demand > 0
@@ -161,8 +159,14 @@ end
 
 function agent_step!(agent::Consumer, model)
     current_tick = abmtime(model)
+
+    # Define spike parameters
+    is_spike = (current_tick >= 10) && (current_tick <= 15)
+    probability = is_spike ? 1.0 : 0.5 # Guarantee orders during spike
+    multiplier = is_spike ? 5 : 1
+
     # make a new order
-    if rand(abmrng(model)) > 0.9 && current_tick < 10
+    if rand(abmrng(model)) <= probability
         # println("new order customer")
 
         # send order to one supplier
@@ -170,10 +174,12 @@ function agent_step!(agent::Consumer, model)
 
         quantity = 1
 
-        new_order = Message(message_id_gen(), :new_order, quantity, current_tick, -1)
-        agent.pending_demand += quantity
-        push!(agent.pending_orders, new_order.id)
-        push!(supplier.inbox, new_order)
+        for _ in 1:quantity:multiplier
+            new_order = Message(message_id_gen(), :new_order, quantity, current_tick, -1)
+            agent.pending_demand += quantity
+            push!(agent.pending_orders, new_order.id)
+            push!(supplier.inbox, new_order)
+        end
     end
 
     processed_letters = Message[]
@@ -371,7 +377,7 @@ agent_reporters = [
 adata_funcs = [first(pair) for pair in agent_reporters]
 new_names = [last(pair) for pair in agent_reporters]
 
-NO_TICKS = 25
+NO_TICKS = 40
 data, _ = run!(model, NO_TICKS; adata = adata_funcs)
 
 rename!(data, vcat([:time, :id, :agent_type], new_names))
