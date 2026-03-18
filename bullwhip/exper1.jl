@@ -26,10 +26,6 @@ message_id_gen = () -> (message_id_counter[] += 1; message_id_counter[])
 NUM_TICKS = 40
 test_is_spike = (current_tick) -> (current_tick >= 10) && (current_tick <= 15)
 
-# TODO for bullwhip
-# - order cancellation
-# - ✅ multiple order creation or perhaps batching (i.e. inflating demand)
-
 #= TODO: unit test, main idea: check that consumer and firm orders
    are succesfully and accurately fulfilled
 =#
@@ -48,6 +44,7 @@ end
     historical_demand::Vector{Int}
     pending_demand::Int
     pending_orders::Vector{Message}
+    cancelled_orders::Vector{Message}
     fulfilled_orders::Set{Int}
 end
 
@@ -56,6 +53,7 @@ end
     inbox::Vector{Message}
     pending_demand::Int
     pending_orders::Vector{Message}
+    cancelled_orders::Vector{Message}
     fulfilled_orders::Set{Int}
 end
 
@@ -80,8 +78,7 @@ function forecast_demand(agent::Firm)
 end
 
 function process_order_cancellations!(agent::Firm, model)
-    # TODO: probably best to clear any cancelled orders first
-    # - ✅ remove it from inbox
+    # TODO
     # - may need to send an order cancellation upstream also, how to calculate?
     #   e.g. compare total cancellations with outstanding upstream orders and
     #   cancel the one of closest quantity?
@@ -91,14 +88,21 @@ function process_order_cancellations!(agent::Firm, model)
     processed_letters = Message[]
     total_quantity = 0
 
+    # clear any cancelled orders
     for letter in agent.inbox
         # only process the order if it was sent at least one tick ago to prevent cascades
         if (letter.sent_tick <= current_tick - 1) && (letter.kind == :order_cancellation)
 
-            pending_order_idx = findfirst(order -> order.id == letter.original_id, agent.pending_orders)
-            cancelled_order = agent.pending_orders[pending_order_idx]
-            total_quantity += cancelled_order.quantity
-            deleteat!(agent.pending_orders, pending_order_idx)
+            waiting_order_idx = findfirst(order -> order.id == letter.original_id, agent.inbox)
+
+            # the order has already been processed and can no longer be cancelled
+            if !isnothing(waiting_order_idx)
+                cancelled_order = agent.inbox[waiting_order_idx]
+                total_quantity += cancelled_order.quantity
+                push!(processed_letters, cancelled_order)
+            end
+
+            push!(processed_letters, letter)
 
         end
     end
@@ -140,7 +144,8 @@ function agent_step!(agent::Firm, model)
     sort_order = Dict(
         :manufacture => 1,
         :fulfilled_order => 2,
-        :new_order => 3
+        :new_order => 3,
+        :order_cancellation => 4 # should already be handled
     )
     sort!(agent.inbox, by = x -> sort_order[x.kind])
 
@@ -187,6 +192,8 @@ function agent_step!(agent::Firm, model)
                 end
                 agent.inventory += letter.quantity
                 push!(processed_letters, letter)
+            elseif letter.kind == :order_cancellation
+                continue
             else
                 throw("Error: unrecognised letter: $letter.kind")
             end
@@ -239,20 +246,19 @@ function agent_step!(agent::Consumer, model)
         end
     end
 
-    process_order_cancellations!(agent, model)
+    make_order_cancellations!(agent, model)
 
     filter!(letter -> letter ∉ processed_letters, agent.inbox)
 end
 
-function process_order_cancellations!(agent::Consumer, model)
+function make_order_cancellations!(agent::Consumer, model)
     current_tick = abmtime(model)
 
     orders_per_tick = Dict{Int, Vector{Message}}()
     for order in agent.pending_orders
 
-        # TODO: put this condition in a function
         # only process the order if it was sent at least one tick ago to prevent cascades
-        if order.sent_tick <= current_tick - 1
+        if order.sent_tick <= current_tick - 1 # older messages
             get!(orders_per_tick, order.sent_tick, Message[])
             push!(orders_per_tick[order.sent_tick], order)
         end
@@ -267,22 +273,23 @@ function process_order_cancellations!(agent::Consumer, model)
             order_cancel_message = Message(
                 message_id_gen(), :order_cancellation, -1, current_tick, order_to_cancel.id)
 
-            supplier = find_supplier_from_pending_order(agent, order_to_cancel.id, model)
+            supplier = find_supplier_from_waiting_order(agent, order_to_cancel.id, model)
 
             # find supplier from order id, if can't find supplier assume the order was already processed
             if !isnothing(supplier)
                 push!(supplier.inbox, order_cancel_message)
+                push!(agent.cancelled_orders, order_to_cancel)
                 deleteat!(agent.pending_orders, findfirst(order -> order.id == order_to_cancel.id, agent.pending_orders))
             end
         end
     end
 end
 
-function find_supplier_from_pending_order(agent::Union{Consumer, Firm}, order_id::Int, model)
+function find_supplier_from_waiting_order(agent::Union{Consumer, Firm}, order_id::Int, model)
     upstream = inneighbors(model.space.graph, agent.pos)
     for supplier_pos in upstream
         for supplier in agents_in_position(supplier_pos, model)
-            if any(order -> order.id == order_id, supplier.pending_orders)
+            if any(order -> order.id == order_id, supplier.inbox)
                 return supplier
             end
         end
@@ -317,6 +324,9 @@ function find_downstream_receiver(agent::Firm, order_id::Int, model)
     for receiver_pos in downstream
         for receiver in agents_in_position(receiver_pos, model)
             if any(order -> order.id == order_id, receiver.pending_orders)
+                return receiver
+            end
+            if any(order -> order.id == order_id, receiver.cancelled_orders)
                 return receiver
             end
         end
@@ -366,6 +376,7 @@ function model_initiation(seed = 0)
             inbox=Message[],
             pending_demand=0,
             pending_orders=Message[],
+            cancelled_orders=Message[],
             fulfilled_orders=Set{Int}())
 
         add_agent!(c, c.pos, model)
@@ -389,6 +400,7 @@ function model_initiation(seed = 0)
                 historical_demand=Int[],
                 pending_demand=0,
                 pending_orders=Message[],
+                cancelled_orders=Message[],
                 fulfilled_orders=Set{Int}())
 
             add_agent!(f, f.pos, model)
@@ -432,6 +444,8 @@ inventoryFn = (agent::Firm) -> agent.inventory
 
 pendingOrders = (agent::Consumer) -> length(agent.pending_orders)
 
+cancelledOrders = (agent::Consumer) -> length(agent.cancelled_orders)
+
 firmOrders = (agent::Firm) -> count(msg.kind == :new_order for msg in agent.inbox)
 
 firmQuantityOrder = (agent::Firm) -> 
@@ -449,6 +463,7 @@ pendingDemand = (agent::Union{Consumer, Firm}) -> agent.pending_demand
 
 agent_reporters = [
     (pendingOrders, :pending_orders),
+    (cancelledOrders, :cancelled_orders),
     (inventoryFn, :inventory),
     (firmOrders, :firm_orders),
     (firmQuantityOrder, :qty_ordered),

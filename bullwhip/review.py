@@ -33,6 +33,7 @@ def consumer_plot_grid(df, ids):
         subset = df[df['id'] == id_val]
         
         ax.plot(subset['time'], subset['pending_orders'], label='Pending')
+        ax.plot(subset['time'], subset['cancelled_orders'], label='Cancelled')
         ax.plot(subset['time'], subset['qty_received'], label='Received')
         
         ax.set_title(f'Consumer {id_val}')
