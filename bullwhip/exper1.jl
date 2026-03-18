@@ -23,8 +23,8 @@ custom_id_gen = () -> (agent_id_counter[] += 1; agent_id_counter[])
 message_id_counter = Ref(100)
 message_id_gen = () -> (message_id_counter[] += 1; message_id_counter[])
 
-NUM_TICKS = 200
-test_is_spike = (current_tick) -> (current_tick >= 10) && (current_tick <= 15)
+NUM_TICKS = 150
+test_is_spike = (current_tick) -> (current_tick >= 50) && (current_tick <= 55)
 
 #= TODO: unit test, main idea: check that consumer and firm orders
    are succesfully and accurately fulfilled
@@ -83,7 +83,7 @@ function process_order_cancellations!(agent::Firm, model)
     processed_letters = Message[]
     total_quantity = 0
 
-    # clear any cancelled orders
+    # clear any received cancelled orders
     for letter in agent.inbox
         # only process the order if it was sent at least one tick ago to prevent cascades
         if (letter.sent_tick <= current_tick - 1) && (letter.kind == :order_cancellation)
@@ -167,7 +167,8 @@ function agent_step!(agent::Firm, model)
     if (length(agent.historical_demand) > 1) &&
         (new_demand > agent.historical_demand[end] * 2.0)
         # multiplier
-        new_demand *= 2
+        historical_max = maximum(agent.historical_demand)
+        new_demand = Int(round(min(new_demand * 1.5, historical_max * 2)))
     end
 
     push!(agent.historical_demand, new_demand)
@@ -229,7 +230,7 @@ function agent_step!(agent::Firm, model)
             elseif letter.kind == :fulfilled_order
                 # increase the inventory, just like manufacture
                 agent.inventory += letter.quantity
-                agent.pending_demand -= letter.quantity
+                agent.pending_demand = max(0, agent.pending_demand - letter.quantity)
                 clear_order(agent, letter.original_id)
                 push!(processed_letters, letter)
             elseif letter.kind == :manufacture
@@ -238,7 +239,7 @@ function agent_step!(agent::Firm, model)
                     if !is_root
                         throw("Error: only root nodes can manufacture")
                     end
-                    agent.pending_demand -= letter.quantity
+                    agent.pending_demand = max(0, agent.pending_demand - letter.quantity)
                     agent.inventory += letter.quantity
                     push!(processed_letters, letter)
                 end
@@ -264,11 +265,11 @@ function agent_step!(agent::Consumer, model)
     # make a new order
     if rand(abmrng(model)) <= probability
         # send order to one supplier
-        supplier = find_upstream_supplier(agent, model)
 
         quantity = 1
 
         for _ in 1:quantity:multiplier
+            supplier = find_upstream_supplier(agent, model)
             new_order = Message(message_id_gen(), :new_order, quantity, current_tick, -1)
             agent.pending_demand += quantity
             push!(agent.pending_orders, new_order)
@@ -288,7 +289,7 @@ function agent_step!(agent::Consumer, model)
                     throw("agent expected quantity one")
                 end
                 push!(processed_letters, letter)
-                agent.pending_demand -= letter.quantity
+                agent.pending_demand = max(0, agent.pending_demand - letter.quantity)
                 clear_order(agent, letter.original_id)
             else
                 throw("Error: unrecognised letter: $letter.kind")
@@ -330,7 +331,7 @@ function make_order_cancellations!(agent::Consumer, model)
                 push!(supplier.inbox, order_cancel_message)
                 push!(agent.cancelled_orders, order_to_cancel)
                 deleteat!(agent.pending_orders, findfirst(order -> order.id == order_to_cancel.id, agent.pending_orders))
-                agent.pending_demand -= order_to_cancel.quantity
+                agent.pending_demand = max(0, agent.pending_demand - order_to_cancel.quantity)
             end
         end
     end
@@ -458,8 +459,8 @@ function model_initiation(seed = 0)
             push!(firm_ids, f.id)
         end
 
-        # potential bug on different seed: no upstream suppliers if previous
-        # tier does not point to a firm in this tier
+        model.firms_by_tier[tier] = firm_ids
+
         if tier == 1
             for fid in firm_ids
                 add_edge!(model, model[fid].pos, consumer_pos)
@@ -467,14 +468,23 @@ function model_initiation(seed = 0)
         else
             prev_ids = model.firms_by_tier[tier - 1]
             for fid in firm_ids
-                sampled_ids = sample(rng, prev_ids, N_FIRM_MAPPING, replace=false)
-                for prev_id in sampled_ids
+
+                my_idx = findfirst(==(fid), firm_ids)
+
+                mapped_ids = [
+                    mod1(my_idx - 1, FIRMS_PER_TIER),
+                    my_idx,
+                    mod1(my_idx + 1, FIRMS_PER_TIER)
+                ]
+
+
+                for prev_idx in mapped_ids
+                    prev_id = prev_ids[prev_idx]
                     add_edge!(model, model[fid].pos, model[prev_id].pos)
                 end
             end
         end
 
-        model.firms_by_tier[tier] = firm_ids
     end
 
     return model
