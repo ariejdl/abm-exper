@@ -23,11 +23,12 @@ custom_id_gen = () -> (agent_id_counter[] += 1; agent_id_counter[])
 message_id_counter = Ref(100)
 message_id_gen = () -> (message_id_counter[] += 1; message_id_counter[])
 
+NUM_TICKS = 40
 test_is_spike = (current_tick) -> (current_tick >= 10) && (current_tick <= 15)
 
 # TODO for bullwhip
-# - order cancellation, e.g. firms cancels one outstanding old order per tick
-# - multiple order creation or perhaps batching (i.e. inflating demand)
+# - order cancellation
+# - ✅ multiple order creation or perhaps batching (i.e. inflating demand)
 
 #= TODO: unit test, main idea: check that consumer and firm orders
    are succesfully and accurately fulfilled
@@ -78,6 +79,37 @@ function forecast_demand(agent::Firm)
     return Int(round(max(0, target_production)))
 end
 
+function process_order_cancellations!(agent::Firm, model)
+    # TODO: probably best to clear any cancelled orders first
+    # - ✅ remove it from inbox
+    # - may need to send an order cancellation upstream also, how to calculate?
+    #   e.g. compare total cancellations with outstanding upstream orders and
+    #   cancel the one of closest quantity?
+
+    current_tick = abmtime(model)
+
+    processed_letters = Message[]
+    total_quantity = 0
+
+    for letter in agent.inbox
+        # only process the order if it was sent at least one tick ago to prevent cascades
+        if (letter.sent_tick <= current_tick - 1) && (letter.kind == :order_cancellation)
+
+            pending_order_idx = findfirst(order -> order.id == letter.original_id, agent.pending_orders)
+            cancelled_order = agent.pending_orders[pending_order_idx]
+            total_quantity += cancelled_order.quantity
+            deleteat!(agent.pending_orders, pending_order_idx)
+
+        end
+    end
+
+    if total_quantity > 0
+        println("quantity cancelled: $total_quantity")
+    end
+
+    filter!(letter -> letter ∉ processed_letters, agent.inbox)
+end
+
 # Firm step
 function agent_step!(agent::Firm, model)
     current_tick = abmtime(model)
@@ -85,11 +117,7 @@ function agent_step!(agent::Firm, model)
     suppliers = shuffle(abmrng(model), collect(find_upstream_suppliers(agent, model)))
     is_root = suppliers == []
 
-    # TODO: probably best to clear any cancelled orders first
-    # - remove it from inbox
-    # - may need to send an order cancellation upstream also, how to calculate?
-    #   e.g. compare total cancellations with outstanding upstream orders and
-    #   cancel the one of closest quantity?
+    process_order_cancellations!(agent, model)
 
     new_demand = forecast_demand(agent)
 
@@ -136,7 +164,7 @@ function agent_step!(agent::Firm, model)
                     # the quantity cascades to the next tier, the id is lost
 
                     receiver = find_downstream_receiver(agent, letter.id, model)
-                    if receiver == nothing
+                    if isnothing(receiver)
                         throw("Error: could not find downstream receiver for order id: $letter.id")
                     end
 
@@ -178,8 +206,6 @@ function agent_step!(agent::Consumer, model)
 
     # make a new order
     if rand(abmrng(model)) <= probability
-        # println("new order customer")
-
         # send order to one supplier
         supplier = find_upstream_supplier(agent, model)
 
@@ -213,15 +239,63 @@ function agent_step!(agent::Consumer, model)
         end
     end
 
+    process_order_cancellations!(agent, model)
+
     filter!(letter -> letter ∉ processed_letters, agent.inbox)
+end
+
+function process_order_cancellations!(agent::Consumer, model)
+    current_tick = abmtime(model)
+
+    orders_per_tick = Dict{Int, Vector{Message}}()
+    for order in agent.pending_orders
+
+        # TODO: put this condition in a function
+        # only process the order if it was sent at least one tick ago to prevent cascades
+        if order.sent_tick <= current_tick - 1
+            get!(orders_per_tick, order.sent_tick, Message[])
+            push!(orders_per_tick[order.sent_tick], order)
+        end
+    end
+
+    for orders in values(orders_per_tick)
+        if length(orders) > 1
+            # firms cancel one outstanding old order every tick, when there is
+            # more than one order placed at a given tick
+
+            order_to_cancel = rand(abmrng(model), orders)
+            order_cancel_message = Message(
+                message_id_gen(), :order_cancellation, -1, current_tick, order_to_cancel.id)
+
+            supplier = find_supplier_from_pending_order(agent, order_to_cancel.id, model)
+
+            # find supplier from order id, if can't find supplier assume the order was already processed
+            if !isnothing(supplier)
+                push!(supplier.inbox, order_cancel_message)
+                deleteat!(agent.pending_orders, findfirst(order -> order.id == order_to_cancel.id, agent.pending_orders))
+            end
+        end
+    end
+end
+
+function find_supplier_from_pending_order(agent::Union{Consumer, Firm}, order_id::Int, model)
+    upstream = inneighbors(model.space.graph, agent.pos)
+    for supplier_pos in upstream
+        for supplier in agents_in_position(supplier_pos, model)
+            if any(order -> order.id == order_id, supplier.pending_orders)
+                return supplier
+            end
+        end
+    end
+    return nothing
 end
 
 function find_upstream_suppliers(agent::Union{Firm, Consumer}, model)
     upstream = inneighbors(model.space.graph, agent.pos)
     Channel() do channel
         for supplier_pos in upstream
-             for agent in agents_in_position(supplier_pos, model)
-                put!(channel, agent)
+             for supplier in agents_in_position(supplier_pos, model)
+                put!(channel, supplier)
              end
         end
     end
@@ -241,9 +315,9 @@ end
 function find_downstream_receiver(agent::Firm, order_id::Int, model)
     downstream = outneighbors(model.space.graph, agent.pos)
     for receiver_pos in downstream
-        for agent in agents_in_position(receiver_pos, model)
-            if any(order -> order.id == order_id, agent.pending_orders)
-                return agent
+        for receiver in agents_in_position(receiver_pos, model)
+            if any(order -> order.id == order_id, receiver.pending_orders)
+                return receiver
             end
         end
     end
@@ -251,7 +325,6 @@ function find_downstream_receiver(agent::Firm, order_id::Int, model)
 end
 
 function clear_order(agent::Union{Firm, Consumer}, order_id::Int)
-    # println("fulfilling: $order_id")
     if order_id in agent.fulfilled_orders
         throw(ArgumentError("Order $order_id has already been fulfilled"))
     end
@@ -387,8 +460,7 @@ agent_reporters = [
 adata_funcs = [first(pair) for pair in agent_reporters]
 new_names = [last(pair) for pair in agent_reporters]
 
-NO_TICKS = 40
-data, _ = run!(model, NO_TICKS; adata = adata_funcs)
+data, _ = run!(model, NUM_TICKS; adata = adata_funcs)
 
 rename!(data, vcat([:time, :id, :agent_type], new_names))
 
