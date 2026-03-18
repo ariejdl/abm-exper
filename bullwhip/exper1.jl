@@ -23,13 +23,15 @@ custom_id_gen = () -> (agent_id_counter[] += 1; agent_id_counter[])
 message_id_counter = Ref(100)
 message_id_gen = () -> (message_id_counter[] += 1; message_id_counter[])
 
-# TODO: validate, e.g. capture order data per node and watch
-# orders flow through, e.g. export as CSV and process in Python to calculate
-# perhaps a real-time or periodic chart is possible
+test_is_spike = (current_tick) -> (current_tick >= 10) && (current_tick <= 15)
 
 # TODO for bullwhip
-# - order cancellation
+# - order cancellation, e.g. firms cancels one outstanding old order per tick
 # - multiple order creation or perhaps batching (i.e. inflating demand)
+
+#= TODO: unit test, main idea: check that consumer and firm orders
+   are succesfully and accurately fulfilled
+=#
 
 struct Message
     id::Int
@@ -83,6 +85,12 @@ function agent_step!(agent::Firm, model)
     suppliers = shuffle(abmrng(model), collect(find_upstream_suppliers(agent, model)))
     is_root = suppliers == []
 
+    # TODO: probably best to clear any cancelled orders first
+    # - remove it from inbox
+    # - may need to send an order cancellation upstream also, how to calculate?
+    #   e.g. compare total cancellations with outstanding upstream orders and
+    #   cancel the one of closest quantity?
+
     new_demand = forecast_demand(agent)
 
     push!(agent.historical_demand, new_demand)
@@ -101,7 +109,11 @@ function agent_step!(agent::Firm, model)
 
     # manufacture and fufilled orders first in order to be able to have maximum inventory
     # for new orders
-    sort_order = Dict(:manufacture => 1, :fulfilled_order => 2, :new_order => 3)
+    sort_order = Dict(
+        :manufacture => 1,
+        :fulfilled_order => 2,
+        :new_order => 3
+    )
     sort!(agent.inbox, by = x -> sort_order[x.kind])
 
     processed_letters = Message[]
@@ -110,7 +122,6 @@ function agent_step!(agent::Firm, model)
 
         # only process the order if it was sent at least one tick ago to prevent cascades
         if letter.sent_tick <= current_tick - 1
-            #println("** ", letter.kind)
             if letter.kind == :new_order
 
                 # check if the new order can be fulfilled with inventory
@@ -161,7 +172,7 @@ function agent_step!(agent::Consumer, model)
     current_tick = abmtime(model)
 
     # Define spike parameters
-    is_spike = (current_tick >= 10) && (current_tick <= 15)
+    is_spike = test_is_spike(current_tick)
     probability = is_spike ? 1.0 : 0.5 # Guarantee orders during spike
     multiplier = is_spike ? 5 : 1
 
@@ -194,7 +205,6 @@ function agent_step!(agent::Consumer, model)
                     throw("agent expected quantity one")
                 end
                 push!(processed_letters, letter)
-                # TODO: fix, this is not removing the letter
                 agent.pending_demand -= letter.quantity
                 clear_order(agent, letter.original_id)
             else
