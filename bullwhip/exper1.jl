@@ -46,7 +46,7 @@ end
     inbox::Vector{Message}
     historical_demand::Vector{Int}
     pending_demand::Int
-    pending_orders::Vector{Int}
+    pending_orders::Vector{Message}
     fulfilled_orders::Set{Int}
 end
 
@@ -54,7 +54,7 @@ end
     preference::Float32
     inbox::Vector{Message}
     pending_demand::Int
-    pending_orders::Vector{Int}
+    pending_orders::Vector{Message}
     fulfilled_orders::Set{Int}
 end
 
@@ -102,7 +102,7 @@ function agent_step!(agent::Firm, model)
         else
             new_order = Message(message_id_gen(), :new_order, new_demand, current_tick, -1)
             agent.pending_demand += new_demand
-            push!(agent.pending_orders, new_order.id)
+            push!(agent.pending_orders, new_order)
             push!(suppliers[1].inbox, new_order)
         end
     end
@@ -188,7 +188,7 @@ function agent_step!(agent::Consumer, model)
         for _ in 1:quantity:multiplier
             new_order = Message(message_id_gen(), :new_order, quantity, current_tick, -1)
             agent.pending_demand += quantity
-            push!(agent.pending_orders, new_order.id)
+            push!(agent.pending_orders, new_order)
             push!(supplier.inbox, new_order)
         end
     end
@@ -242,7 +242,7 @@ function find_downstream_receiver(agent::Firm, order_id::Int, model)
     downstream = outneighbors(model.space.graph, agent.pos)
     for receiver_pos in downstream
         for agent in agents_in_position(receiver_pos, model)
-            if order_id in agent.pending_orders
+            if any(order -> order.id == order_id, agent.pending_orders)
                 return agent
             end
         end
@@ -256,8 +256,8 @@ function clear_order(agent::Union{Firm, Consumer}, order_id::Int)
         throw(ArgumentError("Order $order_id has already been fulfilled"))
     end
     # orders that come directly from inventory are not pending in the receiver
-    if order_id ∈ agent.pending_orders
-        deleteat!(agent.pending_orders, findfirst(==(order_id), agent.pending_orders))
+    if any(order -> order.id == order_id, agent.pending_orders)
+        deleteat!(agent.pending_orders, findfirst(order -> order.id == order_id, agent.pending_orders))
     end
     push!(agent.fulfilled_orders, order_id)
 end
@@ -292,7 +292,7 @@ function model_initiation(seed = 0)
             preference=rand(rng),
             inbox=Message[],
             pending_demand=0,
-            pending_orders=Int[],
+            pending_orders=Message[],
             fulfilled_orders=Set{Int}())
 
         add_agent!(c, c.pos, model)
@@ -315,7 +315,7 @@ function model_initiation(seed = 0)
                 inbox=Message[],
                 historical_demand=Int[],
                 pending_demand=0,
-                pending_orders=Int[],
+                pending_orders=Message[],
                 fulfilled_orders=Set{Int}())
 
             add_agent!(f, f.pos, model)
