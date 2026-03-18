@@ -25,7 +25,7 @@ tier3_ids = range(1041, 1051)
 tiers = reversed([tier1_ids, tier2_ids, tier3_ids])
 
 def consumer_plot_grid(df, ids):
-    fig, axes = plt.subplots(4, 5, figsize=(20, 16), sharex=True, sharey=True)
+    fig, axes = plt.subplots(4, 5, figsize=(30, 15), sharex=True, sharey=True)
     axes = axes.flatten()  # Collapse 4x20 array into 1D for easy iteration
 
     for i, id_val in enumerate(ids):
@@ -53,7 +53,7 @@ import matplotlib.pyplot as plt
 
 def firm_plot(main_df, tiers):
     # sharex and sharey normalize the axes across the entire grid
-    fig, axs = plt.subplots(3, 10, figsize=(40, 15), sharex=True, sharey=True)
+    fig, axs = plt.subplots(3, 10, figsize=(60, 15), sharex=True, sharey=True)
     
     have_legend = False
 
@@ -67,6 +67,7 @@ def firm_plot(main_df, tiers):
             ax.plot(df['time'], df['qty_ordered'], label='Quantity Ordered')
             ax.plot(df['time'], df['pending_demand'], label='Pending Demand')
             ax.plot(df['time'], df['qty_manufactured'], label='Manufactured')
+            ax.plot(df['time'], df['cancelled_orders'], label='Cancelled')
             ax.plot(df['time'], df['qty_received'], label='Received')
 
             ax.set_title(f'Firm {id_val}')

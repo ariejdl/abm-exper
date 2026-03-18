@@ -23,7 +23,7 @@ custom_id_gen = () -> (agent_id_counter[] += 1; agent_id_counter[])
 message_id_counter = Ref(100)
 message_id_gen = () -> (message_id_counter[] += 1; message_id_counter[])
 
-NUM_TICKS = 40
+NUM_TICKS = 200
 test_is_spike = (current_tick) -> (current_tick >= 10) && (current_tick <= 15)
 
 #= TODO: unit test, main idea: check that consumer and firm orders
@@ -78,11 +78,6 @@ function forecast_demand(agent::Firm)
 end
 
 function process_order_cancellations!(agent::Firm, model)
-    # TODO
-    # - may need to send an order cancellation upstream also, how to calculate?
-    #   e.g. compare total cancellations with outstanding upstream orders and
-    #   cancel the one of closest quantity?
-
     current_tick = abmtime(model)
 
     processed_letters = Message[]
@@ -107,8 +102,51 @@ function process_order_cancellations!(agent::Firm, model)
         end
     end
 
+    # send order cancellation messages upstream
     if total_quantity > 0
-        println("quantity cancelled: $total_quantity")
+        # cancel any pending orders if they add to under 150% of total_quantity to cancel
+        suppliers = shuffle(abmrng(model), collect(find_upstream_suppliers(agent, model)))
+
+        awaiting_orders = Vector{Tuple{Firm, Message}}()
+
+        pending_order_ids = map(order -> order.id, agent.pending_orders)
+
+        # check all suppliers for unfulfilled orders belonging to this agent
+        for supplier in suppliers
+            for message in supplier.inbox
+                if (message.sent_tick <= current_tick - 1) &&
+                    (message.kind == :new_order) &&
+                    (message.id ∈ pending_order_ids)
+                    push!(awaiting_orders, (supplier, message))
+                end
+            end
+        end
+
+        sort!(awaiting_orders, by = x -> x[2].quantity)
+
+        current_cancel_quantity = 0
+        orders_to_cancel = Vector{Tuple{Firm, Message}}()
+
+        for order_pair in awaiting_orders
+            new_cancel_quantity = current_cancel_quantity + order_pair[2].quantity
+            if new_cancel_quantity < total_quantity * 2.0
+                current_cancel_quantity += order_pair[2].quantity
+                push!(orders_to_cancel, order_pair)
+            end
+        end
+
+        for (supplier, order) in orders_to_cancel
+            order_cancel_message = Message(
+                message_id_gen(), :order_cancellation, -1, current_tick, order.id)
+
+            push!(agent.cancelled_orders, order)
+            deleteat!(agent.pending_orders, findfirst(o -> o.id == order.id, agent.pending_orders))
+            agent.pending_demand -= order.quantity
+            push!(supplier.inbox, order_cancel_message)
+        end
+
+        len_cancelled = length(orders_to_cancel)        
+        println("quantity cancelled: $total_quantity; order count: $len_cancelled")
     end
 
     filter!(letter -> letter ∉ processed_letters, agent.inbox)
@@ -124,6 +162,13 @@ function agent_step!(agent::Firm, model)
     process_order_cancellations!(agent, model)
 
     new_demand = forecast_demand(agent)
+    
+    # behavioural trait
+    if (length(agent.historical_demand) > 1) &&
+        (new_demand > agent.historical_demand[end] * 2.0)
+        # multiplier
+        new_demand *= 2
+    end
 
     push!(agent.historical_demand, new_demand)
 
@@ -131,6 +176,7 @@ function agent_step!(agent::Firm, model)
         if is_root
             push!(agent.inbox,
                 Message(message_id_gen(), :manufacture, new_demand, current_tick, -1))
+            agent.pending_demand += new_demand
         else
             new_order = Message(message_id_gen(), :new_order, new_demand, current_tick, -1)
             agent.pending_demand += new_demand
@@ -187,11 +233,15 @@ function agent_step!(agent::Firm, model)
                 clear_order(agent, letter.original_id)
                 push!(processed_letters, letter)
             elseif letter.kind == :manufacture
-                if !is_root
-                    throw("Error: only root nodes can manufacture")
+                # manufacturing takes 2 ticks
+                if letter.sent_tick <= current_tick - 2
+                    if !is_root
+                        throw("Error: only root nodes can manufacture")
+                    end
+                    agent.pending_demand -= letter.quantity
+                    agent.inventory += letter.quantity
+                    push!(processed_letters, letter)
                 end
-                agent.inventory += letter.quantity
-                push!(processed_letters, letter)
             elseif letter.kind == :order_cancellation
                 continue
             else
@@ -209,7 +259,7 @@ function agent_step!(agent::Consumer, model)
     # Define spike parameters
     is_spike = test_is_spike(current_tick)
     probability = is_spike ? 1.0 : 0.5 # Guarantee orders during spike
-    multiplier = is_spike ? 5 : 1
+    multiplier = is_spike ? 5 : 1 # * effectively this is a coded behavioural element *
 
     # make a new order
     if rand(abmrng(model)) <= probability
@@ -258,7 +308,7 @@ function make_order_cancellations!(agent::Consumer, model)
     for order in agent.pending_orders
 
         # only process the order if it was sent at least one tick ago to prevent cascades
-        if order.sent_tick <= current_tick - 1 # older messages
+        if order.sent_tick <= current_tick - 2 # older messages
             get!(orders_per_tick, order.sent_tick, Message[])
             push!(orders_per_tick[order.sent_tick], order)
         end
@@ -280,6 +330,7 @@ function make_order_cancellations!(agent::Consumer, model)
                 push!(supplier.inbox, order_cancel_message)
                 push!(agent.cancelled_orders, order_to_cancel)
                 deleteat!(agent.pending_orders, findfirst(order -> order.id == order_to_cancel.id, agent.pending_orders))
+                agent.pending_demand -= order_to_cancel.quantity
             end
         end
     end
@@ -444,7 +495,7 @@ inventoryFn = (agent::Firm) -> agent.inventory
 
 pendingOrders = (agent::Consumer) -> length(agent.pending_orders)
 
-cancelledOrders = (agent::Consumer) -> length(agent.cancelled_orders)
+cancelledOrders = (agent::Union{Consumer, Firm}) -> length(agent.cancelled_orders)
 
 firmOrders = (agent::Firm) -> count(msg.kind == :new_order for msg in agent.inbox)
 
