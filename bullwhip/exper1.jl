@@ -31,7 +31,7 @@ test_is_spike = (current_tick) -> (current_tick >= 20) && (current_tick <= 25)
      are succesfully and accurately fulfilled
    - ✅ set the size of the network programmatically
    - ✅ draw out on A3 all the messages being passed and processed
-   - further debug strange patterns in firm orders
+   - ✅ further debug strange patterns in firm orders
    - ✅ could be simpler and best to implement order cancellation as direct removal from
      supplier inbox rather sending a message; as one can push into an upstream
      inbox one can remove from it perhaps being the justification, however
