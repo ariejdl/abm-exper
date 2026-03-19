@@ -29,15 +29,6 @@ test_is_spike = (current_tick) -> (current_tick >= 20) && (current_tick <= 25)
 #= TODO:
    - unit test, main idea: check that consumer and firm orders
      are succesfully and accurately fulfilled
-   - ✅ set the size of the network programmatically
-   - ✅ draw out on A3 all the messages being passed and processed
-   - ✅ further debug strange patterns in firm orders
-   - ✅ could be simpler and best to implement order cancellation as direct removal from
-     supplier inbox rather sending a message; as one can push into an upstream
-     inbox one can remove from it perhaps being the justification, however
-     how does one calculate how many orders to cancel without an :order_cancellation
-     message being received? Send the :order_cancellation message *after* doing this
-     upstream inbox edit? Should work similarly for consumers
 =#
 
 struct Message
