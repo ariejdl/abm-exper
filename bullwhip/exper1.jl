@@ -106,21 +106,23 @@ function process_order_cancellations!(agent::Firm, model)
         end
     end
 
+    filter!(letter -> letter ∉ processed_letters, agent.inbox)
+
     # send order cancellation messages upstream if can find suitably sized
     # pending orders
     if total_quantity > 0
-        suppliers = shuffle(abmrng(model), collect(find_upstream_suppliers(agent, model)))
+        suppliers = find_upstream_suppliers(agent, model)
 
         awaiting_orders = Vector{Tuple{Firm, Message}}()
 
-        pending_order_ids = map(order -> order.id, agent.pending_orders)
+        my_pending_order_ids = map(order -> order.id, agent.pending_orders)
 
         # check all suppliers for unfulfilled orders belonging to this agent
         for supplier in suppliers
             for message in supplier.inbox
                 if (message.sent_tick <= current_tick - 1) &&
                     (message.kind == :new_order) &&
-                    (message.id ∈ pending_order_ids)
+                    (message.id ∈ my_pending_order_ids)
                     push!(awaiting_orders, (supplier, message))
                 end
             end
@@ -155,7 +157,6 @@ function process_order_cancellations!(agent::Firm, model)
         println("quantity cancelled: $total_quantity; order count: $len_cancelled")
     end
 
-    filter!(letter -> letter ∉ processed_letters, agent.inbox)
 end
 
 # Firm step
@@ -165,6 +166,7 @@ function agent_step!(agent::Firm, model)
     suppliers = shuffle(abmrng(model), collect(find_upstream_suppliers(agent, model)))
     is_root = suppliers == []
 
+    # do this first to clear any cancelled orders before computing demand
     process_order_cancellations!(agent, model)
 
     new_demand = forecast_demand(agent)
@@ -174,7 +176,7 @@ function agent_step!(agent::Firm, model)
         (new_demand > agent.historical_demand[end] * 2.0)
         # multiplier
         historical_max = maximum(agent.historical_demand)
-        new_demand = Int(round(min(new_demand * 1.5, historical_max * 2)))
+        new_demand = Int(round(new_demand * 1.1))
     end
 
     push!(agent.historical_demand, new_demand)
@@ -198,7 +200,8 @@ function agent_step!(agent::Firm, model)
         :new_order => 3,
         :order_cancellation => 4 # should already be handled
     )
-    sort!(agent.inbox, by = x -> sort_order[x.kind])
+    # primary and secondary sort
+    sort!(agent.inbox, by = x -> (sort_order[x.kind], x.sent_tick))
 
     processed_letters = Message[]
 
@@ -221,7 +224,7 @@ function agent_step!(agent::Firm, model)
 
                     receiver = find_downstream_receiver(agent, letter.id, model)
                     if isnothing(receiver)
-                        throw("Error: could not find downstream receiver for order id: $letter.id")
+                        throw(ErrorException("Error: could not find downstream receiver for order id: $letter.id"))
                     end
 
                     # currently only place where message to fulfill order and map to old message
@@ -240,7 +243,7 @@ function agent_step!(agent::Firm, model)
                 # manufacturing takes 2 ticks
                 if letter.sent_tick <= current_tick - 2
                     if !is_root
-                        throw("Error: only root nodes can manufacture")
+                        throw(ErrorException("Error: only root nodes can manufacture"))
                     end
                     agent.inventory += letter.quantity
                     push!(processed_letters, letter)
@@ -248,7 +251,7 @@ function agent_step!(agent::Firm, model)
             elseif letter.kind == :order_cancellation
                 continue
             else
-                throw("Error: unrecognised letter: $letter.kind")
+                throw(ErrorException("Error: unrecognised letter: $letter.kind"))
             end
         end
     end
@@ -287,12 +290,12 @@ function agent_step!(agent::Consumer, model)
             if letter.kind == :fulfilled_order
                 # increase the inventory, just like manufacture
                 if letter.quantity != 1
-                    throw("agent expected quantity one")
+                    throw(ErrorException("agent expected quantity one"))
                 end
                 push!(processed_letters, letter)
                 clear_order(agent, letter.original_id)
             else
-                throw("Error: unrecognised letter: $letter.kind")
+                throw(ErrorException("Error: unrecognised letter: $letter.kind"))
             end
         end
     end
@@ -534,7 +537,6 @@ agent_reporters = [
     (pendingOrders, :pending_orders),
     (cancelledOrders, :cancelled_orders),
     (inventoryFn, :inventory),
-    (firmOrders, :firm_orders),
     (firmQuantityOrder, :qty_ordered),
     (firmQuantityManufacture, :qty_manufactured),
     (quantityReceived, :qty_received),

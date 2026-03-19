@@ -81,7 +81,6 @@ def firm_plot(main_df, tiers):
 
             ax.plot(df['time'], df['pending_orders'], label='Pending')
             ax.plot(df['time'], df['inventory'], label='Inventory')
-            ax.plot(df['time'], df['firm_orders'], label='Order Count')
             ax.plot(df['time'], df['qty_ordered'], label='Quantity Ordered')
             ax.plot(df['time'], df['pending_demand'], label='Pending Demand')
             ax.plot(df['time'], df['qty_manufactured'], label='Manufactured')
