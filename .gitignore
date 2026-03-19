@@ -2,4 +2,5 @@
 *.jpg
 *.jpeg
 *.csv
+*.json
 .DS_Store

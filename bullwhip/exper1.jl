@@ -3,6 +3,7 @@ include("utils.jl")
 
 using CSV
 using DataFrames
+using JSON3
 
 using Agents, Random
 using Agents.DataFrames, Agents.Graphs
@@ -10,10 +11,10 @@ using StatsBase: sample, Weights
 using .Utils: visual_check
 
 MAX_DUPLICATE_ORDERS = 5
-N_CONSUMERS = 20
+N_CONSUMERS = 10
 N_FIRM_MAPPING = 3
 TIERS = 3
-FIRMS_PER_TIER = 10
+FIRMS_PER_TIER = 5
 
 MIN_INVENTORY = 3
 
@@ -23,11 +24,15 @@ custom_id_gen = () -> (agent_id_counter[] += 1; agent_id_counter[])
 message_id_counter = Ref(100)
 message_id_gen = () -> (message_id_counter[] += 1; message_id_counter[])
 
-NUM_TICKS = 150
+NUM_TICKS = 100
 test_is_spike = (current_tick) -> (current_tick >= 50) && (current_tick <= 55)
 
-#= TODO: unit test, main idea: check that consumer and firm orders
-   are succesfully and accurately fulfilled
+#= TODO:
+   - unit test, main idea: check that consumer and firm orders
+     are succesfully and accurately fulfilled
+   - reduce the size of the network programmatically
+   - draw out on A3 all the messages being passed and processed
+   - debug strange patterns in firm orders
 =#
 
 struct Message
@@ -39,6 +44,7 @@ struct Message
 end
 
 @agent struct Firm(GraphAgent)
+    tier::Int
     inventory::Int
     inbox::Vector{Message}
     historical_demand::Vector{Int}
@@ -407,7 +413,7 @@ function model_initiation(seed = 0)
     properties = Dict{Symbol, Any}(
         :space => space,
         :consumer_ids => consumer_ids,
-        :firms_by_tier => firms_by_tier,
+        :firms_by_tier => firms_by_tier
     )
 
     model = StandardABM(Union{Firm, Consumer},
@@ -447,6 +453,7 @@ function model_initiation(seed = 0)
             f = Firm(
                 id=custom_id_gen(),
                 pos=idx,
+                tier=tier,
                 inventory=0,
                 inbox=Message[],
                 historical_demand=Int[],
@@ -459,14 +466,14 @@ function model_initiation(seed = 0)
             push!(firm_ids, f.id)
         end
 
-        model.firms_by_tier[tier] = firm_ids
+        firms_by_tier[tier] = firm_ids
 
         if tier == 1
             for fid in firm_ids
                 add_edge!(model, model[fid].pos, consumer_pos)
             end
         else
-            prev_ids = model.firms_by_tier[tier - 1]
+            prev_ids = firms_by_tier[tier - 1]
             for fid in firm_ids
 
                 my_idx = findfirst(==(fid), firm_ids)
@@ -485,6 +492,13 @@ function model_initiation(seed = 0)
             end
         end
 
+    end
+
+    # Save this metadata
+    open("run_metadata.json", "w") do io
+        JSON3.write(io, Dict(
+            "firms" => firms_by_tier
+        ))
     end
 
     return model

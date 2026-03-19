@@ -1,4 +1,6 @@
 
+import math
+import json
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -18,14 +20,29 @@ for col in ['pending_orders', 'qty_received']:
 
 print(df)
 
-tier1_ids = range(1021, 1031)
-tier2_ids = range(1031, 1041)
-tier3_ids = range(1041, 1051)
+metadata = json.loads(open('run_metadata.json').read())
 
-tiers = reversed([tier1_ids, tier2_ids, tier3_ids])
+sorted_tier_keys = sorted(metadata['firms'].keys(), reverse=True)
+tiers = [metadata['firms'][key] for key in sorted_tier_keys]
+
+def plot_size(ids):
+    n = len(ids)
+    # Calculate rows (floor of sqrt) and columns (floor + 1)
+    nrows = math.floor(math.sqrt(n))
+    ncols = nrows + 1
+    
+    # Safety check to ensure all IDs fit in the grid
+    while nrows * ncols < n:
+        if ncols <= nrows:
+            ncols += 1
+        else:
+            nrows += 1
+
+    return nrows, ncols
 
 def consumer_plot_grid(df, ids):
-    fig, axes = plt.subplots(4, 5, figsize=(30, 15), sharex=True, sharey=True)
+    nrows, ncols = plot_size(ids)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(30, 15), sharex=True, sharey=True)
     axes = axes.flatten()  # Collapse 4x20 array into 1D for easy iteration
 
     for i, id_val in enumerate(ids):
@@ -46,14 +63,15 @@ def consumer_plot_grid(df, ids):
     plt.tight_layout(rect=[0.05, 0.05, 1, 0.95])
     plt.savefig('figs/consumers_grid.png')
 
-target_ids = df['id'].unique()[:20]
-consumer_plot_grid(df, target_ids)
+consumer_ids = list(df[df['agent_type'] == 'Consumer']['id'].unique())
+consumer_plot_grid(df, consumer_ids)
 
 import matplotlib.pyplot as plt
 
 def firm_plot(main_df, tiers):
     # sharex and sharey normalize the axes across the entire grid
-    fig, axs = plt.subplots(3, 10, figsize=(60, 15), sharex=True, sharey=True)
+    fig, axs = plt.subplots(len(tiers), len(tiers[0]),
+                            figsize=(60, 15), sharex=True, sharey=True)
     
     have_legend = False
 
