@@ -11,10 +11,12 @@ using StatsBase: sample, Weights
 using .Utils: visual_check
 
 N_CONSUMERS = 10
-TIERS = 3
-FIRMS_PER_TIER = 8
-MIN_INVENTORY = 2
+TIERS = 4
+FIRMS_PER_TIER = 15
+MIN_INVENTORY = 4
 NUM_TICKS = 80
+FIRM_DEMAND_MULTIPLIER = 2.0
+CONSUMER_DEMAND_MULTIPLIER = 4.0
 
 agent_id_counter = Ref(1_000)
 custom_id_gen = () -> (agent_id_counter[] += 1; agent_id_counter[])
@@ -29,13 +31,13 @@ test_is_spike = (current_tick) -> (current_tick >= 20) && (current_tick <= 25)
      are succesfully and accurately fulfilled
    - ✅ set the size of the network programmatically
    - ✅ draw out on A3 all the messages being passed and processed
-   - furtherdebug strange patterns in firm orders
-   - could be simpler and best to implement order cancellation as direct removal from
+   - further debug strange patterns in firm orders
+   - ✅ could be simpler and best to implement order cancellation as direct removal from
      supplier inbox rather sending a message; as one can push into an upstream
      inbox one can remove from it perhaps being the justification, however
      how does one calculate how many orders to cancel without an :order_cancellation
      message being received? Send the :order_cancellation message *after* doing this
-     upstream inbox edit?
+     upstream inbox edit? Should work similarly for consumers
 =#
 
 struct Message
@@ -84,36 +86,12 @@ function forecast_demand(agent::Firm)
     return Int(round(max(0, target_production)))
 end
 
-function process_order_cancellations!(agent::Firm, model)
+function cancel_upstream_orders(agent::Union{Consumer, Firm}, quantity_to_cancel::Int, model)
     current_tick = abmtime(model)
-
-    processed_letters = Message[]
-    total_quantity = 0
-
-    # clear any received cancelled orders
-    for letter in agent.inbox
-        # only process the order if it was sent at least one tick ago to prevent cascades
-        if (letter.sent_tick <= current_tick - 1) && (letter.kind == :order_cancellation)
-
-            waiting_order_idx = findfirst(order -> order.id == letter.original_id, agent.inbox)
-
-            # the order has already been processed and can no longer be cancelled
-            if !isnothing(waiting_order_idx)
-                cancelled_order = agent.inbox[waiting_order_idx]
-                total_quantity += cancelled_order.quantity
-                push!(processed_letters, cancelled_order)
-            end
-
-            push!(processed_letters, letter)
-
-        end
-    end
-
-    filter!(letter -> letter ∉ processed_letters, agent.inbox)
 
     # send order cancellation messages upstream if can find suitably sized
     # pending orders
-    if total_quantity > 0
+    if quantity_to_cancel > 0
         suppliers = find_upstream_suppliers(agent, model)
 
         awaiting_orders = Vector{Tuple{Firm, Message}}()
@@ -132,33 +110,52 @@ function process_order_cancellations!(agent::Firm, model)
         end
 
         # take the biggest first
-        sort!(awaiting_orders, by = x -> x[2].quantity, rev=true)
+        sort!(awaiting_orders, by = (pair) -> pair[2].quantity, rev=true)
 
         current_cancel_quantity = 0
-        orders_to_cancel = Vector{Tuple{Firm, Message}}()
 
         # check if the orders to cancel are not too large
-        for order_pair in awaiting_orders
-            new_cancel_quantity = current_cancel_quantity + order_pair[2].quantity
-            if new_cancel_quantity < total_quantity * 2.0
-                current_cancel_quantity += order_pair[2].quantity
-                push!(orders_to_cancel, order_pair)
+        for (supplier, order) in awaiting_orders
+            new_cancel_quantity = current_cancel_quantity + order.quantity
+
+            # how many orders can be cancelled?
+            if new_cancel_quantity < quantity_to_cancel * 2.0
+
+                current_cancel_quantity += order.quantity
+
+                order_cancel_message = Message(
+                    message_id_gen(), :order_cancellation, order.quantity, current_tick, order.id)
+
+                push!(supplier.inbox, order_cancel_message)
+
+                deleteat!(supplier.inbox, findfirst(o -> o.id == order.id, supplier.inbox))
+                deleteat!(agent.pending_orders, findfirst(o -> o.id == order.id, agent.pending_orders))
             end
         end
 
-        # send the order cancellations
-        for (supplier, order) in orders_to_cancel
-            order_cancel_message = Message(
-                message_id_gen(), :order_cancellation, -1, current_tick, order.id)
+        len_cancelled = length(awaiting_orders)        
+        println("quantity cancelled: $quantity_to_cancel; order count: $len_cancelled")
+    end    
+end
 
-            push!(agent.cancelled_orders, order)
-            deleteat!(agent.pending_orders, findfirst(o -> o.id == order.id, agent.pending_orders))
-            push!(supplier.inbox, order_cancel_message)
+function process_order_cancellations!(agent::Firm, model)
+    current_tick = abmtime(model)
+
+    processed_letters = Message[]
+    total_quantity = 0
+
+    # tot up cancelled orders
+    for letter in agent.inbox
+        # only process the order if it was sent at least one tick ago to prevent cascades
+        if (letter.sent_tick <= current_tick - 1) && (letter.kind == :order_cancellation)
+            total_quantity += letter.quantity
+            push!(processed_letters, letter)
         end
-
-        len_cancelled = length(orders_to_cancel)        
-        println("quantity cancelled: $total_quantity; order count: $len_cancelled")
     end
+
+    cancel_upstream_orders(agent, total_quantity, model)
+
+    filter!(letter -> letter ∉ processed_letters, agent.inbox)
 
 end
 
@@ -177,9 +174,7 @@ function agent_step!(agent::Firm, model)
     # behavioural trait
     if (length(agent.historical_demand) > 1) &&
         (new_demand > agent.historical_demand[end] * 2.0)
-        # multiplier
-        historical_max = maximum(agent.historical_demand)
-        new_demand = Int(round(new_demand * 1.5))
+        new_demand = Int(round(new_demand * FIRM_DEMAND_MULTIPLIER))
     end
 
     push!(agent.historical_demand, new_demand)
@@ -268,7 +263,7 @@ function agent_step!(agent::Consumer, model)
     # Define spike parameters
     is_spike = test_is_spike(current_tick)
     probability = is_spike ? 1.0 : 0.5 # Guarantee orders during spike
-    multiplier = is_spike ? 3 : 1 # * effectively this is a coded behavioural element *
+    multiplier = is_spike ? CONSUMER_DEMAND_MULTIPLIER : 1 # * effectively this is a coded behavioural element *
 
     # make a new order
     if rand(abmrng(model)) <= probability
@@ -327,17 +322,8 @@ function make_order_cancellations!(agent::Consumer, model)
             # more than one order placed at a given tick
 
             order_to_cancel = rand(abmrng(model), orders)
-            order_cancel_message = Message(
-                message_id_gen(), :order_cancellation, -1, current_tick, order_to_cancel.id)
+            cancel_upstream_orders(agent, order_to_cancel.quantity, model)
 
-            supplier = find_supplier_from_waiting_order(agent, order_to_cancel.id, model)
-
-            # find supplier from order id, if can't find supplier assume the order was already processed
-            if !isnothing(supplier)
-                push!(supplier.inbox, order_cancel_message)
-                push!(agent.cancelled_orders, order_to_cancel)
-                deleteat!(agent.pending_orders, findfirst(order -> order.id == order_to_cancel.id, agent.pending_orders))
-            end
         end
     end
 end
