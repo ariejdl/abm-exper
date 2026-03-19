@@ -30,7 +30,7 @@ test_is_spike = (current_tick) -> (current_tick >= 50) && (current_tick <= 55)
 #= TODO:
    - unit test, main idea: check that consumer and firm orders
      are succesfully and accurately fulfilled
-   - reduce the size of the network programmatically
+   - ✅ set the size of the network programmatically
    - draw out on A3 all the messages being passed and processed
    - debug strange patterns in firm orders
 =#
@@ -48,7 +48,6 @@ end
     inventory::Int
     inbox::Vector{Message}
     historical_demand::Vector{Int}
-    pending_demand::Int
     pending_orders::Vector{Message}
     cancelled_orders::Vector{Message}
     fulfilled_orders::Set{Int}
@@ -57,7 +56,6 @@ end
 @agent struct Consumer(GraphAgent)
     preference::Float32
     inbox::Vector{Message}
-    pending_demand::Int
     pending_orders::Vector{Message}
     cancelled_orders::Vector{Message}
     fulfilled_orders::Set{Int}
@@ -78,7 +76,7 @@ function forecast_demand(agent::Firm)
 
     # 3. Determine Production/Order Requirement
     # Target = Forecast + Safety Buffer - (Current Stock + Incoming Stock)
-    target_production = forecast + MIN_INVENTORY - (agent.inventory + agent.pending_demand)
+    target_production = forecast + MIN_INVENTORY - (agent.inventory + pendingDemand(agent))
     
     return Int(round(max(0, target_production)))
 end
@@ -108,9 +106,9 @@ function process_order_cancellations!(agent::Firm, model)
         end
     end
 
-    # send order cancellation messages upstream
+    # send order cancellation messages upstream if can find suitably sized
+    # pending orders
     if total_quantity > 0
-        # cancel any pending orders if they add to under 150% of total_quantity to cancel
         suppliers = shuffle(abmrng(model), collect(find_upstream_suppliers(agent, model)))
 
         awaiting_orders = Vector{Tuple{Firm, Message}}()
@@ -128,11 +126,13 @@ function process_order_cancellations!(agent::Firm, model)
             end
         end
 
-        sort!(awaiting_orders, by = x -> x[2].quantity)
+        # take the biggest first
+        sort!(awaiting_orders, by = x -> x[2].quantity, rev=true)
 
         current_cancel_quantity = 0
         orders_to_cancel = Vector{Tuple{Firm, Message}}()
 
+        # check if the orders to cancel are not too large
         for order_pair in awaiting_orders
             new_cancel_quantity = current_cancel_quantity + order_pair[2].quantity
             if new_cancel_quantity < total_quantity * 2.0
@@ -141,13 +141,13 @@ function process_order_cancellations!(agent::Firm, model)
             end
         end
 
+        # send the order cancellations
         for (supplier, order) in orders_to_cancel
             order_cancel_message = Message(
                 message_id_gen(), :order_cancellation, -1, current_tick, order.id)
 
             push!(agent.cancelled_orders, order)
             deleteat!(agent.pending_orders, findfirst(o -> o.id == order.id, agent.pending_orders))
-            agent.pending_demand -= order.quantity
             push!(supplier.inbox, order_cancel_message)
         end
 
@@ -183,10 +183,8 @@ function agent_step!(agent::Firm, model)
         if is_root
             push!(agent.inbox,
                 Message(message_id_gen(), :manufacture, new_demand, current_tick, -1))
-            agent.pending_demand += new_demand
         else
             new_order = Message(message_id_gen(), :new_order, new_demand, current_tick, -1)
-            agent.pending_demand += new_demand
             push!(agent.pending_orders, new_order)
             push!(suppliers[1].inbox, new_order)
         end
@@ -236,7 +234,6 @@ function agent_step!(agent::Firm, model)
             elseif letter.kind == :fulfilled_order
                 # increase the inventory, just like manufacture
                 agent.inventory += letter.quantity
-                agent.pending_demand = max(0, agent.pending_demand - letter.quantity)
                 clear_order(agent, letter.original_id)
                 push!(processed_letters, letter)
             elseif letter.kind == :manufacture
@@ -245,7 +242,6 @@ function agent_step!(agent::Firm, model)
                     if !is_root
                         throw("Error: only root nodes can manufacture")
                     end
-                    agent.pending_demand = max(0, agent.pending_demand - letter.quantity)
                     agent.inventory += letter.quantity
                     push!(processed_letters, letter)
                 end
@@ -277,7 +273,6 @@ function agent_step!(agent::Consumer, model)
         for _ in 1:quantity:multiplier
             supplier = find_upstream_supplier(agent, model)
             new_order = Message(message_id_gen(), :new_order, quantity, current_tick, -1)
-            agent.pending_demand += quantity
             push!(agent.pending_orders, new_order)
             push!(supplier.inbox, new_order)
         end
@@ -295,7 +290,6 @@ function agent_step!(agent::Consumer, model)
                     throw("agent expected quantity one")
                 end
                 push!(processed_letters, letter)
-                agent.pending_demand = max(0, agent.pending_demand - letter.quantity)
                 clear_order(agent, letter.original_id)
             else
                 throw("Error: unrecognised letter: $letter.kind")
@@ -337,7 +331,6 @@ function make_order_cancellations!(agent::Consumer, model)
                 push!(supplier.inbox, order_cancel_message)
                 push!(agent.cancelled_orders, order_to_cancel)
                 deleteat!(agent.pending_orders, findfirst(order -> order.id == order_to_cancel.id, agent.pending_orders))
-                agent.pending_demand = max(0, agent.pending_demand - order_to_cancel.quantity)
             end
         end
     end
@@ -432,7 +425,6 @@ function model_initiation(seed = 0)
             pos = 1,
             preference=rand(rng),
             inbox=Message[],
-            pending_demand=0,
             pending_orders=Message[],
             cancelled_orders=Message[],
             fulfilled_orders=Set{Int}())
@@ -457,7 +449,6 @@ function model_initiation(seed = 0)
                 inventory=0,
                 inbox=Message[],
                 historical_demand=Int[],
-                pending_demand=0,
                 pending_orders=Message[],
                 cancelled_orders=Message[],
                 fulfilled_orders=Set{Int}())
@@ -532,7 +523,10 @@ firmQuantityManufacture = (agent::Firm) ->
 quantityReceived = (agent::Union{Consumer, Firm}) -> 
     sum(msg.quantity for msg in agent.inbox if msg.kind == :fulfilled_order; init=0)
 
-pendingDemand = (agent::Union{Consumer, Firm}) -> agent.pending_demand
+function pendingDemand(agent::Union{Consumer, Firm})
+    return sum(msg -> msg.quantity, filter(msg -> msg.kind == :manufacture, agent.inbox), init=0) +
+        sum(msg -> msg.quantity, agent.pending_orders, init=0)
+end
 
 # ========
 
