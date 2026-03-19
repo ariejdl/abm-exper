@@ -10,7 +10,7 @@ using Agents.DataFrames, Agents.Graphs
 using StatsBase: sample, Weights
 using .Utils: visual_check
 
-N_CONSUMERS = 10
+N_CONSUMERS = 25
 TIERS = 4
 FIRMS_PER_TIER = 15
 MIN_INVENTORY = 4
@@ -29,6 +29,8 @@ test_is_spike = (current_tick) -> (current_tick >= 20) && (current_tick <= 25)
 #= TODO:
    - unit test, main idea: check that consumer and firm orders
      are succesfully and accurately fulfilled
+   - if this were getting more serious, would try to simplify, modularise
+     and move more things into different files
 =#
 
 struct Message
@@ -40,7 +42,6 @@ struct Message
 end
 
 @agent struct Firm(GraphAgent)
-    tier::Int
     inventory::Int
     inbox::Vector{Message}
     historical_demand::Vector{Int}
@@ -432,7 +433,6 @@ function model_initiation(seed = 0)
             f = Firm(
                 id=custom_id_gen(),
                 pos=idx,
-                tier=tier,
                 inventory=0,
                 inbox=Message[],
                 historical_demand=Int[],
@@ -489,7 +489,7 @@ end
 
 model = model_initiation()
 
-# visual_check(model, TIERS)
+visual_check(model, TIERS)
 
 # ===== reporting functions =====
 

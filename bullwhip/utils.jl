@@ -2,9 +2,12 @@ module Utils
 
 export visual_check
 
+ENV["GKSwstype"] = "nul" # suppress GUI
+
 using Agents, Random
 using Plots, GraphRecipes
 using Graphs  # Added this to provide nv()
+
 
 function visual_check(model, tiers)
     g = model.space.graph
@@ -50,12 +53,13 @@ function visual_check(model, tiers)
         nodestrokecolor=:grey,
         nodestrokewidth=2,
         names=names,
-        size=(800, 600),
+        size=(1600, 1200),
         xlims=(0.0, WIDTH),
         ylims=(-Y_MARGIN, tiers * TIER_HEIGHT + Y_MARGIN) # Pass tiers as an argument
     )
-    display(p)
-    readline()
+    savefig(p, "figs/visual_check.png")
+    #display(p)
+    #readline()
 end
 
 end # module
