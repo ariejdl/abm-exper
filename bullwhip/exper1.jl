@@ -10,13 +10,11 @@ using Agents.DataFrames, Agents.Graphs
 using StatsBase: sample, Weights
 using .Utils: visual_check
 
-MAX_DUPLICATE_ORDERS = 5
 N_CONSUMERS = 10
-N_FIRM_MAPPING = 3
 TIERS = 3
-FIRMS_PER_TIER = 5
-
-MIN_INVENTORY = 3
+FIRMS_PER_TIER = 8
+MIN_INVENTORY = 2
+NUM_TICKS = 80
 
 agent_id_counter = Ref(1_000)
 custom_id_gen = () -> (agent_id_counter[] += 1; agent_id_counter[])
@@ -24,15 +22,20 @@ custom_id_gen = () -> (agent_id_counter[] += 1; agent_id_counter[])
 message_id_counter = Ref(100)
 message_id_gen = () -> (message_id_counter[] += 1; message_id_counter[])
 
-NUM_TICKS = 100
-test_is_spike = (current_tick) -> (current_tick >= 50) && (current_tick <= 55)
+test_is_spike = (current_tick) -> (current_tick >= 20) && (current_tick <= 25)
 
 #= TODO:
    - unit test, main idea: check that consumer and firm orders
      are succesfully and accurately fulfilled
    - ✅ set the size of the network programmatically
-   - draw out on A3 all the messages being passed and processed
-   - debug strange patterns in firm orders
+   - ✅ draw out on A3 all the messages being passed and processed
+   - furtherdebug strange patterns in firm orders
+   - could be simpler and best to implement order cancellation as direct removal from
+     supplier inbox rather sending a message; as one can push into an upstream
+     inbox one can remove from it perhaps being the justification, however
+     how does one calculate how many orders to cancel without an :order_cancellation
+     message being received? Send the :order_cancellation message *after* doing this
+     upstream inbox edit?
 =#
 
 struct Message
@@ -176,7 +179,7 @@ function agent_step!(agent::Firm, model)
         (new_demand > agent.historical_demand[end] * 2.0)
         # multiplier
         historical_max = maximum(agent.historical_demand)
-        new_demand = Int(round(new_demand * 1.1))
+        new_demand = Int(round(new_demand * 1.5))
     end
 
     push!(agent.historical_demand, new_demand)
@@ -265,7 +268,7 @@ function agent_step!(agent::Consumer, model)
     # Define spike parameters
     is_spike = test_is_spike(current_tick)
     probability = is_spike ? 1.0 : 0.5 # Guarantee orders during spike
-    multiplier = is_spike ? 5 : 1 # * effectively this is a coded behavioural element *
+    multiplier = is_spike ? 3 : 1 # * effectively this is a coded behavioural element *
 
     # make a new order
     if rand(abmrng(model)) <= probability
