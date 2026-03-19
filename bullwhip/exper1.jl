@@ -14,7 +14,7 @@ N_CONSUMERS = 10
 TIERS = 4
 FIRMS_PER_TIER = 15
 MIN_INVENTORY = 4
-NUM_TICKS = 80
+NUM_TICKS = 200
 FIRM_DEMAND_MULTIPLIER = 2.0
 CONSUMER_DEMAND_MULTIPLIER = 4.0
 
@@ -128,8 +128,12 @@ function cancel_upstream_orders(agent::Union{Consumer, Firm}, quantity_to_cancel
 
                 push!(supplier.inbox, order_cancel_message)
 
+                # clear supplier inbox
                 deleteat!(supplier.inbox, findfirst(o -> o.id == order.id, supplier.inbox))
+
+                # change my orders
                 deleteat!(agent.pending_orders, findfirst(o -> o.id == order.id, agent.pending_orders))
+                push!(agent.cancelled_orders, order)
             end
         end
 
