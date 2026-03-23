@@ -33,6 +33,8 @@ test_is_spike = (current_tick) -> (current_tick >= 20) && (current_tick <= 25)
      and move more things into different files
 =#
 
+# N.B.: results appear to be consistent for different seeds
+
 struct Message
     id::Int
     kind::Symbol
@@ -149,6 +151,7 @@ function process_order_cancellations!(agent::Firm, model)
         end
     end
 
+    # could be improved by forecasting demand with this quantity
     cancel_upstream_orders(agent, total_quantity, model)
 
     filter!(letter -> letter ∉ processed_letters, agent.inbox)
@@ -384,7 +387,7 @@ function clear_order(agent::Union{Firm, Consumer}, order_id::Int)
     push!(agent.fulfilled_orders, order_id)
 end
 
-function model_initiation(seed = 0)
+function model_initiation(seed = 101)
     rng = Xoshiro(seed)
     space = GraphSpace(SimpleDiGraph(0))
 
