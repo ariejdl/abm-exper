@@ -52,8 +52,6 @@ def consumer_plot_grid(df, ids):
     plt.tight_layout(rect=[0.05, 0.05, 1, 0.95])
     plt.savefig('figs/consumers_grid.png')
 
-consumer_ids = list(df[df['agent_type'] == 'Consumer']['id'].unique())
-consumer_plot_grid(df, consumer_ids)
 
 def bullwhip_calc(tier, tier_df):
     # Group by time to sum all firms' activity per tick
@@ -131,5 +129,8 @@ def firm_plot(main_df, tiers):
 
     plt.tight_layout()
     plt.savefig('figs/firm_plot.png')
+
+consumer_ids = list(df[df['agent_type'] == 'Consumer']['id'].unique())
+consumer_plot_grid(df, consumer_ids)
 
 firm_plot(df, tiers)
