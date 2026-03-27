@@ -7,18 +7,6 @@ import matplotlib.pyplot as plt
 
 df = pd.read_csv('run.csv')
 
-# if were to use cum sum, might be correct to check deltas on some columns first
-'''
-consumer_df = df[df['agent_type'] == 'Consumer']
-consumer_df = consumer_df.groupby('time').sum(numeric_only=True).reset_index()[
-   ['time', 'pending_orders', 'firm_orders', 'qty_received']
-]
-'''
-
-for col in ['pending_orders', 'qty_received']:
-  #consumer_df[col] = consumer_df[col].cumsum()
-  continue
-
 metadata = json.loads(open('run_metadata.json').read())
 
 sorted_tier_keys = sorted(metadata['firms'].keys(), reverse=True)
@@ -47,8 +35,10 @@ def consumer_plot_grid(df, ids):
     for i, id_val in enumerate(ids):
         ax = axes[i]
         subset = df[df['id'] == id_val]
+
+        subset['cancelled_orders'] = subset['cancelled_orders'].diff()
         
-        ax.plot(subset['time'], subset['pending_orders'], label='Pending')
+        ax.plot(subset['time'], subset['pending_demand'], label='Pending')
         ax.plot(subset['time'], subset['cancelled_orders'], label='Cancelled')
         ax.plot(subset['time'], subset['qty_received'], label='Received')
         
@@ -103,7 +93,7 @@ def firm_plot(main_df, tiers):
 
         for id_val, ax in zip(ids, firm_axes):
             df = main_df[main_df['id'] == id_val]
-            ax.plot(df['time'], df['pending_orders'], label='Pending')
+
             ax.plot(df['time'], df['inventory'], label='Inventory')
             ax.plot(df['time'], df['qty_order_received'], label='Quantity Order Received')
             ax.plot(df['time'], df['pending_demand'], label='Pending Demand')
@@ -121,7 +111,6 @@ def firm_plot(main_df, tiers):
         time_vals.sort()
 
         cols_to_total = [
-            ('pending_orders',       'Pending'),
             ('inventory',            'Inventory'),
             ('qty_order_received',   'Quantity Order Received'),
             ('pending_demand',       'Pending Demand'),

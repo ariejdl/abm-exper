@@ -13,7 +13,7 @@ using .Utils: visual_check
 N_CONSUMERS = 20
 TIERS = 3
 FIRMS_PER_TIER = 15
-MIN_INVENTORY = 4
+MIN_INVENTORY = 10
 NUM_TICKS = 160
 FIRM_DEMAND_MULTIPLIER = 2.0
 CONSUMER_DEMAND_MULTIPLIER = 5.0
@@ -268,9 +268,9 @@ function agent_step!(agent::Consumer, model)
     if rand(abmrng(model)) <= probability
         # send order to one supplier
 
-        quantity = 1
+        quantity = 3
 
-        for _ in 1:quantity:multiplier
+        for _ in 1:quantity*multiplier
             supplier = find_upstream_supplier(agent, model)
             new_order = Message(message_id_gen(), :new_order, quantity, current_tick, -1)
             push!(agent.pending_orders, new_order)
@@ -285,10 +285,6 @@ function agent_step!(agent::Consumer, model)
         # only process the order if it was sent at least one tick ago to prevent cascades
         if letter.sent_tick <= current_tick - 1
             if letter.kind == :fulfilled_order
-                # increase the inventory, just like manufacture
-                if letter.quantity != 1
-                    throw(ErrorException("agent expected quantity one"))
-                end
                 push!(processed_letters, letter)
                 clear_order(agent, letter.original_id)
             else
@@ -316,7 +312,7 @@ function make_order_cancellations!(agent::Consumer, model)
     end
 
     for orders in values(orders_per_tick)
-        if length(orders) > 1
+        if length(orders) > 2
             # firms cancel one outstanding old order every tick, when there is
             # more than one order placed at a given tick
 
@@ -387,7 +383,7 @@ function clear_order(agent::Union{Firm, Consumer}, order_id::Int)
     push!(agent.fulfilled_orders, order_id)
 end
 
-function model_initiation(seed = 4)
+function model_initiation(seed = 11)
     rng = Xoshiro(seed)
     space = GraphSpace(SimpleDiGraph(0))
 
@@ -505,12 +501,11 @@ end
 
 inventoryFn = (agent::Firm) -> agent.inventory
 
-pendingOrders = (agent::Consumer) -> length(agent.pending_orders)
-
-cancelledOrders = (agent::Union{Consumer, Firm}) -> length(agent.cancelled_orders)
-
 function make_reporters(model)
     t() = abmtime(model)
+
+    cancelledOrders = (agent::Union{Consumer, Firm}) -> 
+        sum(msg.quantity for msg in agent.cancelled_orders; init=0)
 
     firmQuantityOrderReceived = (agent::Firm) -> 
         sum(msg.quantity for msg in agent.inbox if msg.kind == :new_order && msg.sent_tick == t()-1; init=0)
@@ -527,7 +522,6 @@ function make_reporters(model)
     end
 
     return [
-        (pendingOrders, :pending_orders),
         (cancelledOrders, :cancelled_orders),
         (inventoryFn, :inventory),
         (firmQuantityOrderReceived, :qty_order_received),
