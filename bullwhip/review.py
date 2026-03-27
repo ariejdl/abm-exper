@@ -67,7 +67,6 @@ consumer_plot_grid(df, consumer_ids)
 
 def bullwhip_calc(tier, tier_df):
     # Group by time to sum all firms' activity per tick
-    # tier_df = tier_df[tier_df['time'] < 50]
     tier_totals = tier_df.groupby('time').agg({
         'pending_demand': 'sum',
         'qty_order_received': 'sum'

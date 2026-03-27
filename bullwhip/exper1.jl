@@ -10,13 +10,13 @@ using Agents.DataFrames, Agents.Graphs
 using StatsBase: sample, Weights
 using .Utils: visual_check
 
-N_CONSUMERS = 25
-TIERS = 4
+N_CONSUMERS = 20
+TIERS = 3
 FIRMS_PER_TIER = 15
 MIN_INVENTORY = 4
 NUM_TICKS = 160
 FIRM_DEMAND_MULTIPLIER = 2.0
-CONSUMER_DEMAND_MULTIPLIER = 4.0
+CONSUMER_DEMAND_MULTIPLIER = 5.0
 
 agent_id_counter = Ref(1_000)
 custom_id_gen = () -> (agent_id_counter[] += 1; agent_id_counter[])
@@ -237,8 +237,8 @@ function agent_step!(agent::Firm, model)
                 clear_order(agent, letter.original_id)
                 push!(processed_letters, letter)
             elseif letter.kind == :manufacture
-                # manufacturing takes 2 ticks
-                if letter.sent_tick <= current_tick - 2
+                # manufacturing takes 3 ticks
+                if letter.sent_tick <= current_tick - 3
                     if !is_root
                         throw(ErrorException("Error: only root nodes can manufacture"))
                     end
@@ -387,7 +387,7 @@ function clear_order(agent::Union{Firm, Consumer}, order_id::Int)
     push!(agent.fulfilled_orders, order_id)
 end
 
-function model_initiation(seed = 101)
+function model_initiation(seed = 4)
     rng = Xoshiro(seed)
     space = GraphSpace(SimpleDiGraph(0))
 
@@ -540,6 +540,8 @@ end
 agent_reporters = make_reporters(model)
 adata_funcs = [first(pair) for pair in agent_reporters]
 new_names = [last(pair) for pair in agent_reporters]
+
+# === main run ====
 
 data, _ = run!(model, NUM_TICKS; adata = adata_funcs)
 
