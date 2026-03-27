@@ -14,7 +14,7 @@ N_CONSUMERS = 25
 TIERS = 4
 FIRMS_PER_TIER = 15
 MIN_INVENTORY = 4
-NUM_TICKS = 200
+NUM_TICKS = 160
 FIRM_DEMAND_MULTIPLIER = 2.0
 CONSUMER_DEMAND_MULTIPLIER = 4.0
 
@@ -75,7 +75,7 @@ function forecast_demand(agent::Firm)
 
     # 3. Determine Production/Order Requirement
     # Target = Forecast + Safety Buffer - (Current Stock + Incoming Stock)
-    target_production = forecast + MIN_INVENTORY - (agent.inventory + pendingDemand(agent))
+    target_production = forecast + MIN_INVENTORY - (agent.inventory + pendingDemandSimple(agent))
     
     return Int(round(max(0, target_production)))
 end
@@ -131,8 +131,8 @@ function cancel_upstream_orders(agent::Union{Consumer, Firm}, quantity_to_cancel
             end
         end
 
-        len_cancelled = length(awaiting_orders)        
-        println("quantity cancelled: $quantity_to_cancel; order count: $len_cancelled")
+        # len_cancelled = length(awaiting_orders)        
+        # println("quantity cancelled: $quantity_to_cancel; order count: $len_cancelled")
     end    
 end
 
@@ -496,45 +496,52 @@ visual_check(model, TIERS)
 
 # ===== reporting functions =====
 
+function pendingDemandSimple(agent::Union{Consumer, Firm})
+    return sum(msg -> msg.quantity, filter(msg -> msg.kind == :manufacture, agent.inbox), init=0) +
+           sum(msg -> msg.quantity, agent.pending_orders, init=0)
+end
+
+# === reporting functions ===
+
 inventoryFn = (agent::Firm) -> agent.inventory
 
 pendingOrders = (agent::Consumer) -> length(agent.pending_orders)
 
 cancelledOrders = (agent::Union{Consumer, Firm}) -> length(agent.cancelled_orders)
 
-firmOrders = (agent::Firm) -> count(msg.kind == :new_order for msg in agent.inbox)
+function make_reporters(model)
+    t() = abmtime(model)
 
-firmQuantityOrder = (agent::Firm) -> 
-    sum(msg.quantity for msg in agent.inbox if msg.kind == :new_order; init=0)
+    firmQuantityOrderReceived = (agent::Firm) -> 
+        sum(msg.quantity for msg in agent.inbox if msg.kind == :new_order && msg.sent_tick == t()-1; init=0)
 
-firmQuantityManufacture = (agent::Firm) -> 
-    sum(msg.quantity for msg in agent.inbox if msg.kind == :manufacture; init=0)
+    firmQuantityManufacture = (agent::Firm) -> 
+        sum(msg.quantity for msg in agent.inbox if msg.kind == :manufacture && msg.sent_tick == t()-1; init=0)
 
-quantityReceived = (agent::Union{Consumer, Firm}) -> 
-    sum(msg.quantity for msg in agent.inbox if msg.kind == :fulfilled_order; init=0)
+    quantityReceived = (agent::Union{Consumer, Firm}) -> 
+        sum(msg.quantity for msg in agent.inbox if msg.kind == :fulfilled_order && msg.sent_tick == t()-1; init=0)
 
-function pendingDemand(agent::Union{Consumer, Firm})
-    return sum(msg -> msg.quantity, filter(msg -> msg.kind == :manufacture, agent.inbox), init=0) +
-        sum(msg -> msg.quantity, agent.pending_orders, init=0)
+    function pendingDemand(agent::Union{Consumer, Firm})
+        return sum(msg -> msg.quantity, filter(msg -> msg.kind == :manufacture && msg.sent_tick == t()-1, agent.inbox), init=0) +
+               sum(msg -> msg.quantity, filter(msg -> msg.sent_tick == t()-1, agent.pending_orders), init=0)
+    end
+
+    return [
+        (pendingOrders, :pending_orders),
+        (cancelledOrders, :cancelled_orders),
+        (inventoryFn, :inventory),
+        (firmQuantityOrderReceived, :qty_order_received),
+        (firmQuantityManufacture, :qty_manufactured),
+        (quantityReceived, :qty_received),
+        (pendingDemand, :pending_demand)
+    ]
 end
 
-# ========
-
-agent_reporters = [
-    (pendingOrders, :pending_orders),
-    (cancelledOrders, :cancelled_orders),
-    (inventoryFn, :inventory),
-    (firmQuantityOrder, :qty_ordered),
-    (firmQuantityManufacture, :qty_manufactured),
-    (quantityReceived, :qty_received),
-    (pendingDemand, :pending_demand)
-]
-
+agent_reporters = make_reporters(model)
 adata_funcs = [first(pair) for pair in agent_reporters]
 new_names = [last(pair) for pair in agent_reporters]
 
 data, _ = run!(model, NUM_TICKS; adata = adata_funcs)
 
 rename!(data, vcat([:time, :id, :agent_type], new_names))
-
 CSV.write("run.csv", data)
